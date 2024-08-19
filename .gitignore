@@ -1,0 +1,17 @@
+.DS_Store
+
+*.zlib
+*.sarc
+*.ctpk
+*.bccad
+
+*.png
+*.tga
+*.jpg
+
+*.o
+
+ctpk/ctpkt
+zlib-sarc/zlib-sarc
+
+export
