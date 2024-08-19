@@ -93,7 +93,7 @@ int main(int argc, char* argv[]) {
     FindResult findResult;
 
     if (argc < 2)
-        panic("Missing ZLIB binary path argument");
+        usage();
 
     zlibPath = argv[1];
     findPath = argc > 2 ? argv[2] : NULL;
