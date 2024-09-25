@@ -18,6 +18,8 @@
 #define SARC_DATA_ALIGN 128
 #define SARC_NAME_ALIGN 4
 
+#define SARC_DUMMY_NAME "DMY" // sizeof must be SARC_NAME_ALIGN
+
 typedef struct __attribute((packed)) {
     u32 magic; // Compare to SARC_MAGIC
     u16 headerSize; // Always 0x14
@@ -246,6 +248,8 @@ typedef struct {
 
     u8* data;
     u32 dataSize;
+
+    int nil;
 } SarcBuildFile;
 
 SarcBuildResult SarcBuild(SarcBuildFile* files, u32 fileCount) {
@@ -287,12 +291,18 @@ SarcBuildResult SarcBuild(SarcBuildFile* files, u32 fileCount) {
         SarcBuildFile* buildFile = files + i;
         SfatNode* node = (SfatNode*)(sfatHeader + 1) + i;
 
-        if (buildFile->data == NULL) {
-            node->nameHash = 0x00000000;
-            node->dataOffsetStart = 0x00000000;
-            node->dataOffsetEnd = 0x00000000;
-            node->nameOffsetDiv4 = 0x0000;
-            node->isNameOffsetAvaliable = 0x0000;
+        if (buildFile->nil) {
+            node->nameHash = GetHash(SARC_DUMMY_NAME, 3, sfatHeader->hashKey);
+
+            node->nameOffsetDiv4 = nextNameOffset / 4;
+            node->isNameOffsetAvaliable = 0x0100;
+
+            nextNameOffset += SARC_NAME_ALIGN;
+
+            node->dataOffsetStart = nextDataOffset;
+            node->dataOffsetEnd = nextDataOffset + SARC_DATA_ALIGN;
+
+            nextDataOffset += SARC_DATA_ALIGN;
 
             continue;
         }
@@ -352,11 +362,23 @@ SarcBuildResult SarcBuild(SarcBuildFile* files, u32 fileCount) {
     for (u32 i = 0; i < fileCount; i++) {
         SarcBuildFile* buildFile = files + i;
 
-        strcpy(nextString, buildFile->name);
-        nextString += ((strlen(buildFile->name) + 1) + SARC_NAME_ALIGN - 1) & ~(SARC_NAME_ALIGN - 1);
+        if (buildFile->name) {
+            strcpy(nextString, buildFile->name);
+            nextString += ((strlen(buildFile->name) + 1) + SARC_NAME_ALIGN - 1) & ~(SARC_NAME_ALIGN - 1);
+        }
+        else {
+            strcpy(nextString, "DMY");
+            nextString += SARC_NAME_ALIGN;
+        }
 
-        memcpy(nextData, buildFile->data, buildFile->dataSize);
-        nextData += (buildFile->dataSize + SARC_DATA_ALIGN - 1) & ~(SARC_DATA_ALIGN - 1);
+        if (buildFile->data) {
+            memcpy(nextData, buildFile->data, buildFile->dataSize);
+            nextData += (buildFile->dataSize + SARC_DATA_ALIGN - 1) & ~(SARC_DATA_ALIGN - 1);
+        }
+        else {
+            memset(nextData, 0x00, SARC_DATA_ALIGN);
+            nextData += SARC_DATA_ALIGN;
+        }
     }
 
     return result;
