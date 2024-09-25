@@ -209,41 +209,46 @@ int main(int argc, char* argv[]) {
 
             fileCount = SarcGetNodeCount(likeSarc.ptr);
 
-            printf("Construct matching build files: \n");
+            printf("Construct matching build files:\n");
+
+            // Array to track used input files
+            int usedInputFiles[args.inputFileCount];
+            memset(usedInputFiles, 0, sizeof(usedInputFiles));
 
             files = (SarcBuildFile*)malloc(sizeof(SarcBuildFile) * fileCount);
-            if (files == NULL)
+            if (!files)
                 PANIC_MALLOC("build files");
 
-            for (u16 a = 0; a < fileCount; a++) {
+            // Match files
+            for (u32 a = 0; a < fileCount; a++) {
                 char* sarcFileName = SarcGetNameFromIndex(likeSarc.ptr, a);
                 SarcBuildFile* file = files + a;
 
                 file->data = NULL;
                 file->dataSize = 0;
                 file->name = NULL;
+                file->nil = 1;
 
+                // Search for matching input files
                 for (u32 b = 0; b < args.inputFileCount; b++) {
                     char bPath[512];
                     OSPathToSarcPath(args.inputFiles[b], bPath);
 
                     if (strcmp(sarcFileName, bPath) == 0) {
                         file->name = strdup(sarcFileName);
-
-                        printf("Match found (%03u. %s), copying..", a + 1, file->name);
+                        printf("Match found (%03u. %s), copying..\n", a + 1, file->name);
 
                         FILE* fpBin = fopen(args.inputFiles[b], "rb");
-                        if (fpBin == NULL)
+                        if (!fpBin)
                             panic("The file could not be opened.");
 
                         fseek(fpBin, 0, SEEK_END);
                         file->dataSize = ftell(fpBin);
                         rewind(fpBin);
 
-                        file->data = (u8 *)malloc(file->dataSize);
-                        if (file->data == NULL) {
+                        file->data = (u8*)malloc(file->dataSize);
+                        if (!file->data) {
                             fclose(fpBin);
-
                             PANIC_MALLOC("file buf");
                         }
 
@@ -251,21 +256,63 @@ int main(int argc, char* argv[]) {
                         if (bytesCopied != file->dataSize) {
                             free(file->data);
                             fclose(fpBin);
-
-                            panic("Buffer readin fail");
+                            panic("Buffer reading failed");
                         }
 
                         fclose(fpBin);
+                        file->nil = 0;
+                        usedInputFiles[b] = 1;
 
                         LOG_OK;
-
                         break;
                     }
                 }
 
-                if (file->data == NULL)
+                if (!file->data)
                     printf("Match not found for file no. %u (%s).\n", a + 1, sarcFileName);
             }
+
+            // Process additive files
+            for (u32 b = 0; b < args.inputFileCount; b++) {
+                if (!usedInputFiles[b] && !strchr(args.inputFiles[b], '*')) {
+                    files = realloc(files, sizeof(SarcBuildFile) * (++fileCount));
+                    if (!files)
+                        PANIC_MALLOC("realloc build files");
+
+                    SarcBuildFile* file = files + fileCount - 1;
+
+                    char bPath[512];
+                    OSPathToSarcPath(args.inputFiles[b], bPath);
+                    file->name = strdup(bPath);
+
+                    printf("Additive file found (%s), copying..", file->name);
+
+                    FILE* fpBin = fopen(args.inputFiles[b], "rb");
+                    if (!fpBin)
+                        panic("The file could not be opened.");
+
+                    fseek(fpBin, 0, SEEK_END);
+                    file->dataSize = ftell(fpBin);
+                    rewind(fpBin);
+
+                    file->data = (u8*)malloc(file->dataSize);
+                    if (!file->data) {
+                        fclose(fpBin);
+                        PANIC_MALLOC("file buf");
+                    }
+
+                    u64 bytesCopied = fread(file->data, 1, file->dataSize, fpBin);
+                    if (bytesCopied != file->dataSize) {
+                        free(file->data);
+                        fclose(fpBin);
+                        panic("Buffer reading failed");
+                    }
+
+                    fclose(fpBin);
+                    LOG_OK;
+                }
+            }
+
         }
         else {
             printf("Construct build files: \n");
@@ -313,6 +360,8 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        printf("\n");
+
         SarcBuildResult result = SarcBuild(files, fileCount);
 
         ZlibResult zlibBin = compressData(result.ptr, result.size);
@@ -332,8 +381,10 @@ int main(int argc, char* argv[]) {
         for (u32 j = 0; j < args.inputFileCount; j++) {
             SarcBuildFile* file = files + j;
 
-            free(file->name);
-            free(file->data);
+            if (file->name)
+                free(file->name);
+            if (file->data)
+                free(file->data);
         }
         free(files);
 
@@ -354,11 +405,12 @@ int main(int argc, char* argv[]) {
         u16 nodeCount = SarcGetNodeCount(sarcBin.ptr);
         for (u16 i = 0; i < nodeCount; i++) {
             char* name = SarcGetNameFromIndex(sarcBin.ptr, i);
+            FindResult file = SarcGetFileFromIndex(sarcBin.ptr, i);
             
             if (!name)
                 panic("A file's name could not be found.");
 
-            printf("%03u. %s\n", i+1, name);
+            printf("%03u. %s (size: %u)\n", i+1, name, file.size);
         }
 
         free(sarcBin.ptr);
