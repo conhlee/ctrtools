@@ -395,6 +395,9 @@ int main(int argc, char* argv[]) {
     else if (strcasecmp(args.command, "list") == 0) {
         printf("-- Listing archive --\n\n");
 
+        if (args.likePath)
+            printf("Warning: a like path was passed but will not be used.\n");
+
         ZlibResult sarcBin = ReadZLIBFromPath(args.inputFiles[0]);
 
         SarcPreprocess(sarcBin.ptr);
@@ -417,6 +420,9 @@ int main(int argc, char* argv[]) {
     }
     else if (strcasecmp(args.command, "raw") == 0) {
         CHECK_OUTPUT_GIVEN();
+
+        if (args.likePath)
+            printf("Warning: a like path was passed but will not be used.\n");
 
         printf("-- Exporting archive --\n\n");
 
