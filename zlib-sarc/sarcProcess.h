@@ -15,7 +15,10 @@
 #define BOMARKER_BIG 0xFFFE
 #define BOMARKER_LITTLE 0xFEFF
 
-typedef struct {
+#define SARC_DATA_ALIGN 128
+#define SARC_NAME_ALIGN 4
+
+typedef struct __attribute((packed)) {
     u32 magic; // Compare to SARC_MAGIC
     u16 headerSize; // Always 0x14
     u16 boMarker; // Byte Order Mark: compare to BOMARKER_BIG and BOMARKER_LITTLE
@@ -27,7 +30,7 @@ typedef struct {
     u16 _reserved;
 } SarcFileHeader;
 
-typedef struct {
+typedef struct __attribute((packed)) {
     u32 magic; // Compare to SFAT_MAGIC
     u16 headerSize; // Usually 0xC
 
@@ -35,20 +38,21 @@ typedef struct {
     u32 hashKey; // Usually 0x65
 } SfatHeader;
 
-typedef struct {
+typedef struct __attribute((packed)) {
     u32 nameHash;
 
-    u32 attributes;
+    u16 nameOffsetDiv4;
+    u16 isNameOffsetAvaliable;
 
     u32 dataOffsetStart; // Relative to the SARC header's dataStart
     u32 dataOffsetEnd; // Relative to the SARC header's dataStart
 } SfatNode;
 
-typedef struct {
+typedef struct __attribute((packed)) {
     u32 magic; // Compare to SFNT_MAGIC
     u16 headerSize;
 
-    u16 pad16;
+    u16 _pad16;
 } SfntHeader;
 
 u32 GetHash(const char* name, u32 length, u32 key) {
@@ -64,15 +68,28 @@ void SarcPreprocess(u8* sarcData) {
     if (fileHeader->magic != SARC_MAGIC)
         panic("SARC header magic is nonmatching");
 
+    if (
+        fileHeader->boMarker != BOMARKER_LITTLE &&
+        fileHeader->boMarker != BOMARKER_BIG
+    )
+        panic("SARC byte order mark is invalid");
+
+    SfatHeader* sfatHeader = (SfatHeader*)(sarcData + fileHeader->headerSize);
+    if (sfatHeader->magic != SFAT_MAGIC)
+        panic("SFAT header magic is nonmatching");
+
+    SfntHeader* sfntHeader = (SfntHeader*)(
+        ((SfatNode*)((u8*)sfatHeader + sfatHeader->headerSize)) +
+        sfatHeader->nodeCount
+    );
+    if (sfntHeader->magic != SFNT_MAGIC)
+        panic("SFNT header magic is nonmatching");
+
     if (fileHeader->boMarker != BOMARKER_BIG)
         return;
 
     fileHeader->headerSize = __builtin_bswap16(fileHeader->headerSize);
     fileHeader->dataStart = __builtin_bswap32(fileHeader->dataStart);
-
-    SfatHeader* sfatHeader = (SfatHeader*)(sarcData + fileHeader->headerSize);
-    if (sfatHeader->magic != SFAT_MAGIC)
-        panic("SFAT header magic is nonmatching");
 
     sfatHeader->headerSize = __builtin_bswap16(sfatHeader->headerSize);
     sfatHeader->nodeCount = __builtin_bswap16(sfatHeader->nodeCount);
@@ -85,45 +102,17 @@ void SarcPreprocess(u8* sarcData) {
 
         node->nameHash = __builtin_bswap32(node->nameHash);
 
-        node->attributes = __builtin_bswap32(node->attributes);
+        node->nameOffsetDiv4 = __builtin_bswap16(node->nameOffsetDiv4);
+        node->isNameOffsetAvaliable = __builtin_bswap16(node->isNameOffsetAvaliable);
 
         node->dataOffsetStart = __builtin_bswap32(node->dataOffsetStart);
         node->dataOffsetEnd = __builtin_bswap32(node->dataOffsetEnd);
     }
 
-    SfntHeader* sfntHeader = (SfntHeader*)(
-        ((SfatNode*)((u8*)sfatHeader + sfatHeader->headerSize)) +
-        sfatHeader->nodeCount
-    );
-    if (sfntHeader->magic != SFNT_MAGIC)
-        panic("SFNT header magic is nonmatching");
-
     sfntHeader->headerSize = __builtin_bswap16(sfntHeader->headerSize);
 
     fileHeader->boMarker = BOMARKER_LITTLE;
     return;
-}
-
-void SarcLogFilenames(const u8* sarcData) {
-    SarcFileHeader* fileHeader = (SarcFileHeader*)sarcData;
-
-    SfatHeader* sfatHeader = (SfatHeader*)(sarcData + fileHeader->headerSize);
-
-    SfntHeader* sfntHeader = (SfntHeader*)(
-        ((SfatNode*)(
-            sarcData + fileHeader->headerSize + sfatHeader->headerSize
-        )) + sfatHeader->nodeCount
-    );
-
-    printf("Files: \n");
-
-    char* stringPtr = (char*)sfntHeader + sfntHeader->headerSize;
-    for (u32 i = 0; i < sfatHeader->nodeCount; i++) {
-        printf(INDENT_SPACE "%d. %s\n", i + 1, stringPtr);
-
-        u32 length = strlen(stringPtr) + 1;
-        stringPtr += (length + 3) & ~3;
-    }
 }
 
 typedef struct {
@@ -175,17 +164,20 @@ char* SarcGetNameFromIndex(const u8* sarcData, u16 nodeIndex) {
     SfatNode* node =
         ((SfatNode*)((u8*)sfatHeader + sfatHeader->headerSize)) + nodeIndex;
 
-    u32 searchHash = node->nameHash;
-
     SfntHeader* sfntHeader = (SfntHeader*)(
         ((SfatNode*)(
             sarcData + fileHeader->headerSize + sfatHeader->headerSize
         )) + sfatHeader->nodeCount
     );
-
     char* stringPtr = (char*)sfntHeader + sfntHeader->headerSize;
-    for (u32 i = 0; i < sfatHeader->nodeCount; i++) {
-        if (GetHash(stringPtr, strlen(stringPtr), sfatHeader->hashKey) == searchHash)
+
+    if (node->isNameOffsetAvaliable != 0x0000)
+        return stringPtr + (node->nameOffsetDiv4 * 4);
+
+    // If name offset isn't avaliable, search the string pool for a string with
+    // a matching hash
+    for (u16 i = 0; i < sfatHeader->nodeCount; i++) {
+        if (GetHash(stringPtr, strlen(stringPtr), sfatHeader->hashKey) == node->nameHash)
             return stringPtr;
 
         u32 length = strlen(stringPtr) + 1;
@@ -239,6 +231,132 @@ FindResult SarcFindFile(u8* sarcData, const char* name) {
             result.size = node->dataOffsetEnd - node->dataOffsetStart;
             break;
         }
+    }
+
+    return result;
+}
+
+typedef struct {
+    u8* ptr;
+    u32 size;
+} SarcBuildResult;
+
+typedef struct {
+    char* name;
+
+    u8* data;
+    u32 dataSize;
+} SarcBuildFile;
+
+SarcBuildResult SarcBuild(SarcBuildFile* files, u32 fileCount) {
+    SarcBuildResult result;
+
+    u32 initialSize =
+        sizeof(SarcFileHeader) +
+        sizeof(SfatHeader) +
+        (sizeof(SfatNode) * fileCount);
+
+    printf("Alloc initial buffer (size : %u) ..", initialSize);
+
+    result.ptr = (u8*)malloc(initialSize);
+    if (result.ptr == NULL)
+        PANIC_MALLOC("initial build buf");
+
+    LOG_OK;
+
+    printf("Building file header & SFAT section ..");
+
+    SarcFileHeader* fileHeader = (SarcFileHeader*)result.ptr;
+    SfatHeader* sfatHeader = (SfatHeader*)(fileHeader + 1);
+
+    fileHeader->magic = SARC_MAGIC;
+    fileHeader->headerSize = sizeof(SarcFileHeader);
+    fileHeader->boMarker = BOMARKER_LITTLE;
+    fileHeader->versionNumber = 0x0100;
+    fileHeader->_reserved = 0x0000;
+
+    sfatHeader->magic = SFAT_MAGIC;
+    sfatHeader->headerSize = sizeof(SfatHeader);
+    sfatHeader->nodeCount = fileCount;
+    sfatHeader->hashKey = 0x65;
+
+    u32 nextNameOffset = 0;
+    u32 nextDataOffset = 0;
+
+    for (u32 i = 0; i < fileCount; i++) {
+        SarcBuildFile* buildFile = files + i;
+        SfatNode* node = (SfatNode*)(sfatHeader + 1) + i;
+
+        if (buildFile->data == NULL) {
+            node->nameHash = 0x00000000;
+            node->dataOffsetStart = 0x00000000;
+            node->dataOffsetEnd = 0x00000000;
+            node->nameOffsetDiv4 = 0x0000;
+            node->isNameOffsetAvaliable = 0x0000;
+
+            continue;
+        }
+
+        node->nameHash =
+            GetHash(buildFile->name, strlen(buildFile->name), sfatHeader->hashKey);
+
+        node->nameOffsetDiv4 = nextNameOffset / 4;
+        node->isNameOffsetAvaliable = 0x0100;
+
+        nextNameOffset += strlen(buildFile->name) + 1;
+        if (i + 1 != fileCount)
+            nextNameOffset = (nextNameOffset + SARC_NAME_ALIGN - 1) & ~(SARC_NAME_ALIGN - 1);
+
+        node->dataOffsetStart = nextDataOffset;
+        node->dataOffsetEnd = nextDataOffset + buildFile->dataSize;
+
+        nextDataOffset += buildFile->dataSize;
+        if (i + 1 != fileCount)
+            nextDataOffset = (nextDataOffset + SARC_DATA_ALIGN - 1) & ~(SARC_DATA_ALIGN - 1);
+    }
+
+    LOG_OK;
+
+    fileHeader->dataStart = (
+        initialSize +
+        sizeof(SfntHeader) + nextNameOffset +
+        31
+    ) & ~31;
+
+    u32 newSize = fileHeader->dataStart + nextDataOffset;
+
+    printf("Realloc buffer (size : %u) ..", newSize);
+
+    result.ptr = realloc(result.ptr, newSize);
+    if (result.ptr == NULL)
+        PANIC_MALLOC("final build buf");
+
+    result.size = newSize;
+
+    fileHeader = (SarcFileHeader*)result.ptr;
+    sfatHeader = (SfatHeader*)(fileHeader + 1);
+
+    fileHeader->fileSize = newSize;
+
+    LOG_OK;
+
+    SfntHeader* sfntHeader = (SfntHeader*)(result.ptr + initialSize);
+
+    sfntHeader->magic = SFNT_MAGIC;
+    sfntHeader->headerSize = sizeof(SfntHeader);
+    sfntHeader->_pad16 = 0x0000;
+
+    char* nextString = (char*)(sfntHeader + 1);
+    u8* nextData = (u8*)(result.ptr + fileHeader->dataStart);
+
+    for (u32 i = 0; i < fileCount; i++) {
+        SarcBuildFile* buildFile = files + i;
+
+        strcpy(nextString, buildFile->name);
+        nextString += ((strlen(buildFile->name) + 1) + SARC_NAME_ALIGN - 1) & ~(SARC_NAME_ALIGN - 1);
+
+        memcpy(nextData, buildFile->data, buildFile->dataSize);
+        nextData += (buildFile->dataSize + SARC_DATA_ALIGN - 1) & ~(SARC_DATA_ALIGN - 1);
     }
 
     return result;
