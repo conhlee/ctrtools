@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 
 #include <string.h>
 
@@ -32,8 +33,17 @@ typedef signed char s8;
 
 #define LOG_OK printf(" OK\n")
 
-void panic(const char* msg) {
-    printf("\nPANIC: %s\nExiting ..\n", msg);
+void panic(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+
+    char buffer[1024];
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+
+    printf("\nPANIC: %s\n\n", buffer);
+
+    va_end(args);
+
     exit(1);
 }
 

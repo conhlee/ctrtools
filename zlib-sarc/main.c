@@ -52,7 +52,7 @@ ZlibResult ReadZLIBFromPath(char* zlibPath) {
 
 void usage(int title) {
     if (title) {
-        printf("ZLIB-SARC Tool v2.0\n");
+        printf("ZLIB-SARC Tool v2.1\n");
         printf("A tool for ZLIB-SARC (.zlib) archives.\n\n");
     }
 
@@ -67,7 +67,6 @@ void usage(int title) {
 
     printf("Options:\n");
     printf("    -o <path> Specifies the output path.\n");
-    printf("    -l <path> Replicate the structure of the archive specified by this path.\n\n");
 
     printf("Examples:\n");
     printf("    zlib-sarc extract example.zlib -o ./output_directory\n");
@@ -80,9 +79,8 @@ typedef struct {
     char* command;
 
     char* outputPath; // -o
-    char* likePath; // -l
 
-    u32 inputFileCount;
+    unsigned inputFileCount;
     char** inputFiles;
 } Arguments;
 
@@ -91,7 +89,6 @@ int main(int argc, char* argv[]) {
     args.command = NULL;
 
     args.outputPath = NULL;
-    args.likePath = NULL;
     
     args.inputFileCount = 0;
     args.inputFiles = NULL;
@@ -107,14 +104,6 @@ int main(int argc, char* argv[]) {
             if (strcasecmp(argv[i], "-o") == 0) {
                 if (i + 1 < argc)
                     args.outputPath = argv[++i];
-                else {
-                    printf("Error: missing output path after -o.\n\n");
-                    usage(0);
-                }
-            }
-            else if (strcasecmp(argv[i], "-l") == 0) {
-                if (i + 1 < argc)
-                    args.likePath = argv[++i];
                 else {
                     printf("Error: missing output path after -o.\n\n");
                     usage(0);
@@ -143,9 +132,6 @@ int main(int argc, char* argv[]) {
         CHECK_OUTPUT_GIVEN();
 
         printf("-- Extracting archive --\n\n");
-
-        if (args.likePath)
-            printf("Warning: a like path was passed but will not be used.\n");
 
         ZlibResult sarcBin = ReadZLIBFromPath(args.inputFiles[0]);
 
@@ -203,168 +189,69 @@ int main(int argc, char* argv[]) {
         SarcBuildFile* files = NULL;
         u32 fileCount = 0;
 
-        if (args.likePath) {
-            ZlibResult likeSarc = ReadZLIBFromPath(args.likePath);
-            SarcPreprocess(likeSarc.ptr);
+        printf("Construct build files: \n");
 
-            fileCount = SarcGetNodeCount(likeSarc.ptr);
+        fileCount = args.inputFileCount;
 
-            printf("Construct matching build files:\n");
+        files = (SarcBuildFile*)malloc(sizeof(SarcBuildFile) * fileCount);
+        if (files == NULL)
+            PANIC_MALLOC("build files");
 
-            // Array to track used input files
-            int usedInputFiles[args.inputFileCount];
-            memset(usedInputFiles, 0, sizeof(usedInputFiles));
+        for (unsigned j = 0; j < fileCount; j++) {
+            SarcBuildFile* file = files + j;
 
-            files = (SarcBuildFile*)malloc(sizeof(SarcBuildFile) * fileCount);
-            if (!files)
-                PANIC_MALLOC("build files");
+            file->name = (char*)malloc(512);
+            OSPathToSarcPath(args.inputFiles[j], file->name);
 
-            // Match files
-            for (u32 a = 0; a < fileCount; a++) {
-                char* sarcFileName = SarcGetNameFromIndex(likeSarc.ptr, a);
-                SarcBuildFile* file = files + a;
+            printf("Read & copy file no. %u (%s) ..", j + 1, file->name);
 
-                file->data = NULL;
-                file->dataSize = 0;
-                file->name = NULL;
-                file->nil = 1;
+            FILE* fpBin = fopen(args.inputFiles[j], "rb");
+            if (fpBin == NULL)
+                panic("The file could not be opened.");
 
-                // Search for matching input files
-                for (u32 b = 0; b < args.inputFileCount; b++) {
-                    char bPath[512];
-                    OSPathToSarcPath(args.inputFiles[b], bPath);
+            fseek(fpBin, 0, SEEK_END);
+            file->dataSize = ftell(fpBin);
+            rewind(fpBin);
 
-                    if (strcmp(sarcFileName, bPath) == 0) {
-                        file->name = strdup(sarcFileName);
-                        printf("Match found (%03u. %s), copying..\n", a + 1, file->name);
-
-                        FILE* fpBin = fopen(args.inputFiles[b], "rb");
-                        if (!fpBin)
-                            panic("The file could not be opened.");
-
-                        fseek(fpBin, 0, SEEK_END);
-                        file->dataSize = ftell(fpBin);
-                        rewind(fpBin);
-
-                        file->data = (u8*)malloc(file->dataSize);
-                        if (!file->data) {
-                            fclose(fpBin);
-                            PANIC_MALLOC("file buf");
-                        }
-
-                        u64 bytesCopied = fread(file->data, 1, file->dataSize, fpBin);
-                        if (bytesCopied != file->dataSize) {
-                            free(file->data);
-                            fclose(fpBin);
-                            panic("Buffer reading failed");
-                        }
-
-                        fclose(fpBin);
-                        file->nil = 0;
-                        usedInputFiles[b] = 1;
-
-                        LOG_OK;
-                        break;
-                    }
-                }
-
-                if (!file->data)
-                    printf("Match not found for file no. %u (%s).\n", a + 1, sarcFileName);
-            }
-
-            // Process additive files
-            for (u32 b = 0; b < args.inputFileCount; b++) {
-                if (!usedInputFiles[b] && !strchr(args.inputFiles[b], '*')) {
-                    files = realloc(files, sizeof(SarcBuildFile) * (++fileCount));
-                    if (!files)
-                        PANIC_MALLOC("realloc build files");
-
-                    SarcBuildFile* file = files + fileCount - 1;
-
-                    char bPath[512];
-                    OSPathToSarcPath(args.inputFiles[b], bPath);
-                    file->name = strdup(bPath);
-
-                    printf("Additive file found (%s), copying..", file->name);
-
-                    FILE* fpBin = fopen(args.inputFiles[b], "rb");
-                    if (!fpBin)
-                        panic("The file could not be opened.");
-
-                    fseek(fpBin, 0, SEEK_END);
-                    file->dataSize = ftell(fpBin);
-                    rewind(fpBin);
-
-                    file->data = (u8*)malloc(file->dataSize);
-                    if (!file->data) {
-                        fclose(fpBin);
-                        PANIC_MALLOC("file buf");
-                    }
-
-                    u64 bytesCopied = fread(file->data, 1, file->dataSize, fpBin);
-                    if (bytesCopied != file->dataSize) {
-                        free(file->data);
-                        fclose(fpBin);
-                        panic("Buffer reading failed");
-                    }
-
-                    fclose(fpBin);
-                    LOG_OK;
-                }
-            }
-
-        }
-        else {
-            printf("Construct build files: \n");
-
-            fileCount = args.inputFileCount;
-
-            files = (SarcBuildFile*)malloc(sizeof(SarcBuildFile) * fileCount);
-            if (files == NULL)
-                PANIC_MALLOC("build files");
-
-            for (u32 j = 0; j < fileCount; j++) {
-                SarcBuildFile* file = files + j;
-
-                file->name = (char*)malloc(512);
-                OSPathToSarcPath(args.inputFiles[j], file->name);
-
-                printf("Read & copy file no. %u (%s) ..", j + 1, file->name);
-
-                FILE* fpBin = fopen(args.inputFiles[j], "rb");
-                if (fpBin == NULL)
-                    panic("The file could not be opened.");
-
-                fseek(fpBin, 0, SEEK_END);
-                file->dataSize = ftell(fpBin);
-                rewind(fpBin);
-
-                file->data = (u8 *)malloc(file->dataSize);
-                if (file->data == NULL) {
-                    fclose(fpBin);
-
-                    PANIC_MALLOC("file buf");
-                }
-
-                u64 bytesCopied = fread(file->data, 1, file->dataSize, fpBin);
-                if (bytesCopied != file->dataSize) {
-                    free(file->data);
-                    fclose(fpBin);
-
-                    panic("Buffer readin fail");
-                }
-
+            file->data = (u8 *)malloc(file->dataSize);
+            if (file->data == NULL) {
                 fclose(fpBin);
 
-                LOG_OK;
+                PANIC_MALLOC("file buf");
             }
+
+            u64 bytesCopied = fread(file->data, 1, file->dataSize, fpBin);
+            if (bytesCopied != file->dataSize) {
+                free(file->data);
+                fclose(fpBin);
+
+                panic("Buffer readin fail");
+            }
+
+            fclose(fpBin);
+
+            LOG_OK;
         }
 
         printf("\n");
 
+        SarcPrepareBuild(files, fileCount);
         SarcBuildResult result = SarcBuild(files, fileCount);
 
+        // Free build files
+        for (unsigned j = 0; j < args.inputFileCount; j++) {
+            SarcBuildFile* file = files + j;
+
+            if (file->name)
+                free(file->name);
+            if (file->data)
+                free(file->data);
+        }
+        free(files);
+
         ZlibResult zlibBin = compressData(result.ptr, result.size);
+
+        free(result.ptr);
 
         printf("Writing file data ..");
 
@@ -377,26 +264,12 @@ int main(int argc, char* argv[]) {
         
         fclose(fpOut);
 
-        // Free build files
-        for (u32 j = 0; j < args.inputFileCount; j++) {
-            SarcBuildFile* file = files + j;
-
-            if (file->name)
-                free(file->name);
-            if (file->data)
-                free(file->data);
-        }
-        free(files);
-
         free(zlibBin.ptr);
 
         LOG_OK;
     }
     else if (strcasecmp(args.command, "list") == 0) {
         printf("-- Listing archive --\n\n");
-
-        if (args.likePath)
-            printf("Warning: a like path was passed but will not be used.\n");
 
         ZlibResult sarcBin = ReadZLIBFromPath(args.inputFiles[0]);
 
@@ -406,7 +279,7 @@ int main(int argc, char* argv[]) {
         int prevDepth = 0;
 
         u16 nodeCount = SarcGetNodeCount(sarcBin.ptr);
-        for (u16 i = 0; i < nodeCount; i++) {
+        for (unsigned i = 0; i < nodeCount; i++) {
             char* name = SarcGetNameFromIndex(sarcBin.ptr, i);
             FindResult file = SarcGetFileFromIndex(sarcBin.ptr, i);
             
@@ -420,9 +293,6 @@ int main(int argc, char* argv[]) {
     }
     else if (strcasecmp(args.command, "raw") == 0) {
         CHECK_OUTPUT_GIVEN();
-
-        if (args.likePath)
-            printf("Warning: a like path was passed but will not be used.\n");
 
         printf("-- Exporting archive --\n\n");
 

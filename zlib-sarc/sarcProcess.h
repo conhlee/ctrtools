@@ -18,6 +18,8 @@
 #define SARC_DATA_ALIGN 128
 #define SARC_NAME_ALIGN 4
 
+#define SARC_HASH_KEY (0x65)
+
 #define SARC_DUMMY_NAME "DMY" // sizeof must be SARC_NAME_ALIGN
 
 typedef struct __attribute((packed)) {
@@ -57,9 +59,9 @@ typedef struct __attribute((packed)) {
     u16 _pad16;
 } SfntHeader;
 
-u32 GetHash(const char* name, u32 length, u32 key) {
+u32 _SarcCalculateHash(const char* name, u32 length, u32 key) {
     u32 result = 0;
-	for (u32 i = 0; i < length; i++)
+	for (unsigned i = 0; i < length; i++)
 		result = name[i] + result * key;
 
 	return result;
@@ -98,7 +100,7 @@ void SarcPreprocess(u8* sarcData) {
     sfatHeader->hashKey = __builtin_bswap32(sfatHeader->hashKey);
 
     // SFAT nodes
-    for (u32 i = 0; i < sfatHeader->nodeCount; i++) {
+    for (unsigned i = 0; i < sfatHeader->nodeCount; i++) {
         SfatNode* node =
             ((SfatNode*)((u8*)sfatHeader + sfatHeader->headerSize)) + i;
 
@@ -142,8 +144,8 @@ char* SarcGetNameFromHash(const u8* sarcData, u32 hash) {
     );
 
     char* stringPtr = (char*)sfntHeader + sfntHeader->headerSize;
-    for (u32 i = 0; i < sfatHeader->nodeCount; i++) {
-        if (GetHash(stringPtr, strlen(stringPtr), sfatHeader->hashKey) == hash)
+    for (unsigned i = 0; i < sfatHeader->nodeCount; i++) {
+        if (_SarcCalculateHash(stringPtr, strlen(stringPtr), sfatHeader->hashKey) == hash)
             return stringPtr;
 
         u32 length = strlen(stringPtr) + 1;
@@ -179,7 +181,7 @@ char* SarcGetNameFromIndex(const u8* sarcData, u16 nodeIndex) {
     // If name offset isn't avaliable, search the string pool for a string with
     // a matching hash
     for (u16 i = 0; i < sfatHeader->nodeCount; i++) {
-        if (GetHash(stringPtr, strlen(stringPtr), sfatHeader->hashKey) == node->nameHash)
+        if (_SarcCalculateHash(stringPtr, strlen(stringPtr), sfatHeader->hashKey) == node->nameHash)
             return stringPtr;
 
         u32 length = strlen(stringPtr) + 1;
@@ -218,13 +220,13 @@ FindResult SarcFindFile(u8* sarcData, const char* name) {
     u8* dataStart = sarcData + fileHeader->dataStart;
 
     SfatHeader* sfatHeader = (SfatHeader*)(sarcData + fileHeader->headerSize);
-    u32 nameHash = GetHash(name, strlen(name), sfatHeader->hashKey);
+    u32 nameHash = _SarcCalculateHash(name, strlen(name), sfatHeader->hashKey);
 
     FindResult result;
     result.ptr = NULL;
     result.size = 0;
 
-    for (u32 i = 0; i < sfatHeader->nodeCount; i++) {
+    for (unsigned i = 0; i < sfatHeader->nodeCount; i++) {
         SfatNode* node =
             ((SfatNode*)((u8*)sfatHeader + sfatHeader->headerSize)) + i;
 
@@ -245,12 +247,25 @@ typedef struct {
 
 typedef struct {
     char* name;
+    u32 nameHash;
 
     u8* data;
     u32 dataSize;
-
-    int nil;
 } SarcBuildFile;
+
+int _SarcSortBuildFile(const void* a, const void* b) {
+    return (((SarcBuildFile*)a)->nameHash - ((SarcBuildFile*)b)->nameHash);
+}
+
+// Assign name hashes to build files & sort
+void SarcPrepareBuild(SarcBuildFile* files, u32 fileCount) {
+    for (unsigned i = 0; i < fileCount; i++) {
+        SarcBuildFile* file = files + i;
+        file->nameHash = _SarcCalculateHash(file->name, strlen(file->name), SARC_HASH_KEY);
+    }
+
+    qsort(files, fileCount, sizeof(SarcBuildFile), _SarcSortBuildFile);
+}
 
 SarcBuildResult SarcBuild(SarcBuildFile* files, u32 fileCount) {
     SarcBuildResult result;
@@ -282,33 +297,16 @@ SarcBuildResult SarcBuild(SarcBuildFile* files, u32 fileCount) {
     sfatHeader->magic = SFAT_MAGIC;
     sfatHeader->headerSize = sizeof(SfatHeader);
     sfatHeader->nodeCount = fileCount;
-    sfatHeader->hashKey = 0x65;
+    sfatHeader->hashKey = SARC_HASH_KEY;
 
     u32 nextNameOffset = 0;
     u32 nextDataOffset = 0;
 
-    for (u32 i = 0; i < fileCount; i++) {
+    for (unsigned i = 0; i < fileCount; i++) {
         SarcBuildFile* buildFile = files + i;
         SfatNode* node = (SfatNode*)(sfatHeader + 1) + i;
 
-        if (buildFile->nil) {
-            node->nameHash = GetHash(SARC_DUMMY_NAME, 3, sfatHeader->hashKey);
-
-            node->nameOffsetDiv4 = nextNameOffset / 4;
-            node->isNameOffsetAvaliable = 0x0100;
-
-            nextNameOffset += SARC_NAME_ALIGN;
-
-            node->dataOffsetStart = nextDataOffset;
-            node->dataOffsetEnd = nextDataOffset + SARC_DATA_ALIGN;
-
-            nextDataOffset += SARC_DATA_ALIGN;
-
-            continue;
-        }
-
-        node->nameHash =
-            GetHash(buildFile->name, strlen(buildFile->name), sfatHeader->hashKey);
+        node->nameHash = buildFile->nameHash;
 
         node->nameOffsetDiv4 = nextNameOffset / 4;
         node->isNameOffsetAvaliable = 0x0100;
@@ -359,26 +357,14 @@ SarcBuildResult SarcBuild(SarcBuildFile* files, u32 fileCount) {
     char* nextString = (char*)(sfntHeader + 1);
     u8* nextData = (u8*)(result.ptr + fileHeader->dataStart);
 
-    for (u32 i = 0; i < fileCount; i++) {
+    for (unsigned i = 0; i < fileCount; i++) {
         SarcBuildFile* buildFile = files + i;
 
-        if (buildFile->name) {
-            strcpy(nextString, buildFile->name);
-            nextString += ((strlen(buildFile->name) + 1) + SARC_NAME_ALIGN - 1) & ~(SARC_NAME_ALIGN - 1);
-        }
-        else {
-            strcpy(nextString, "DMY");
-            nextString += SARC_NAME_ALIGN;
-        }
+        strcpy(nextString, buildFile->name);
+        nextString += ((strlen(buildFile->name) + 1) + SARC_NAME_ALIGN - 1) & ~(SARC_NAME_ALIGN - 1);
 
-        if (buildFile->data) {
-            memcpy(nextData, buildFile->data, buildFile->dataSize);
-            nextData += (buildFile->dataSize + SARC_DATA_ALIGN - 1) & ~(SARC_DATA_ALIGN - 1);
-        }
-        else {
-            memset(nextData, 0x00, SARC_DATA_ALIGN);
-            nextData += SARC_DATA_ALIGN;
-        }
+        memcpy(nextData, buildFile->data, buildFile->dataSize);
+        nextData += (buildFile->dataSize + SARC_DATA_ALIGN - 1) & ~(SARC_DATA_ALIGN - 1);
     }
 
     return result;

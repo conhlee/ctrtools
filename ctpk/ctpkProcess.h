@@ -88,20 +88,20 @@ typedef struct {
 void I_CtpkConvertTexture(u32** bufferOut, u32* sizeOut, const TextureEntry* textureInfoEntry, const CtpkFileHeader* fileHeader) {
     const u32* dataIn = (const u32*)(
         (u8*)fileHeader + fileHeader->textureSectionOffset +
-	textureInfoEntry->dataOffset
+	    textureInfoEntry->dataOffset
     );
 
     ImageProcessFunction function;
     switch (textureInfoEntry->dataFormat) {
     case 0x0C:
-	function = ProcessETC1;
-	break;
+        function = ProcessETC1;
+        break;
     case 0x0D:
-	function = ProcessETC1A4;
-	break;
+        function = ProcessETC1A4;
+        break;
 
     default:
-	panic("Texture format not implemented");
+	    panic("Texture format not implemented (%u)", textureInfoEntry->dataFormat);
     }
 
     function(

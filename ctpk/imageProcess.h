@@ -38,7 +38,7 @@ void ProcessETC1A4(u32** bufferOut, u32* sizeOut, const u32* dataIn, u16 width, 
 				*(u64*)&data = __builtin_bswap64(*(u64*)&dataIn[inOffset]);
 				inOffset += 2;
 
-				unpackETC1Block(&data, pixels, FALSE);
+				unpackETC1Block(&data, pixels, 0);
 
 				u32* lPixel = pixels;
 				for (u32 x = xImage + xStart; x < xImage + xStart + 4; x++)
@@ -70,7 +70,7 @@ void ProcessETC1(u32** bufferOut, u32* sizeOut, const u32* dataIn, u16 width, u1
 				*(u64*)&data = __builtin_bswap64(*(u64*)&dataIn[inOffset]);
 				inOffset += 2;
 
-				unpackETC1Block(&data, pixels, FALSE);
+				unpackETC1Block(&data, pixels, 0);
 
 				u32* lPixel = pixels;
 				for (u32 x = xImage + xStart; x < xImage + xStart + 4; x++)
